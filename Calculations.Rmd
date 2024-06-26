@@ -1,0 +1,170 @@
+---
+title: "Calculations"
+author: "Timo Trinidad"
+date: "2024-06-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tidyverse)
+```
+Reading the data and creating a tibble: 
+```{r}
+data = read_delim("Data_R.csv", locale=locale(encoding="latin1"))
+summary(data)
+```
+Adjusting unit for "Niederschlag" from "mm/d" to "m^3/d" with area of Oberuzwil of 14'076'000 m2: 
+```{r}
+data$`Nied. 0-0 [mm]`= (data$`Nied. 0-0 [mm]`*0.001)*14076000
+data<- data %>%
+    rename("Nied_0_m3" = "Nied. 0-0 [mm]")
+
+data$`Nied. 6-6 [mm]`= (data$`Nied. 6-6 [mm]`*0.001)*14076000
+data<- data %>%
+    rename("Nied_6_m3" = "Nied. 6-6 [mm]")
+
+data$`ET[mm]` = (data$`ET[mm]` *0.001)*14076000
+data<- data %>%
+    rename("ET [m3/d]" = "ET[mm]")
+
+data$`Ref. ET [mm]` = (data$`Ref. ET [mm]` *0.001)*14076000
+data<- data %>%
+    rename("Ref. ET [m3/d]" = "Ref. ET [mm]")
+```
+
+
+Cleaning the Data: Days with special events are coded in the column "Kommentar Verbrauch" or "Kommentar Förderung". As these special events might carry information about how the demand for the three sources could interplay, we do not just delete them, but create two separate tibbles.
+
+```{r}
+data_clean = data |> 
+  filter(is.na(data$`Kommentar Verbrauch`) & is.na(data$`Kommentar Förderung`)) |> 
+  select(!`Kommentar Verbrauch`) |>
+  select(!`Kommentar Förderung`)
+view(data_clean)
+```
+
+```{r}
+data_special = data |>
+  filter(!(is.na(data$`Kommentar Verbrauch`)) | !(is.na(data$`Kommentar Förderung`)))
+
+view(data_special)
+```
+
+Filtering the data for summer periode (June,July, August)
+```{r}
+data_clean_summer = data_clean |> 
+  filter(data_clean$Monat %in% c(6,7,8))
+```
+
+Adding a column, with the summ of "Quellwasser" and "Grundwassertot": 
+```{r}
+data_clean_summer$interneBezuege = data_clean_summer$`Grundwasser tot. `+ data_clean_summer$`Quellwasser [m^3]`
+```
+Linear regression of "Gruppenbezug" on "Grundwasser", "Quellwasser" and "Ständige Wohnbevölkerung" (representing Gesamtverbracuh): 
+```{r}
+plot(x= data$`Gruppenbezug [m^3]`, y=(data$`Grundwasser tot. `+data$`Quellwasser [m^3]`))
+```
+
+Descriptive Statistics: 
+```{r}
+data |> 
+  filter(`Quellwasser [m^3]` == min(`Quellwasser [m^3]`))
+```
+Graph showing Gruppenbezug as a share of "Gesamtbezug" for summer months: 
+
+Adding binary column, that show, if value of "Grundwasser tOt" or "Quellbezug" or "Gesamtbezug" is greater than median
+```{r}
+data_clean_summer$med_Quell = ifelse(data_clean_summer$`Quellwasser [m^3]`> median(data_clean_summer$`Quellwasser [m^3]`), TRUE, FALSE)
+
+data_clean_summer$med_Grund = ifelse(data_clean_summer$`Grundwasser tot. `> median(data_clean_summer$`Grundwasser tot. `), TRUE, FALSE)
+
+data_clean_summer$med_Ges = 
+  ifelse(data_clean_summer$`Gesamtförderung [m^3/d]`> median(data_clean_summer$`Gesamtförderung [m^3/d]`), TRUE, FALSE)
+
+data_clean_summer$med = vector("character", length(data_clean_summer$`Quellwasser [m^3]`))
+i= 1
+while (i <= length(data_clean_summer$med)) {
+  if (data_clean_summer$med_Quell[i] == FALSE & data_clean_summer$med_Grund[i] == FALSE) {
+    data_clean_summer$med[i] = "Quellbezug kleiner Median,
+    Grundwasser groesser Median"
+  } else if (data_clean_summer$med_Quell[i] == TRUE & data_clean_summer$med_Grund[i] == FALSE) {
+    data_clean_summer$med[i] = "Quellbezug groesser Median,
+    Grundwasser kleiner Median"
+  } else if (data_clean_summer$med_Quell[i] == FALSE & data_clean_summer$med_Grund[i] == TRUE) {
+    data_clean_summer$med[i] = "Quellbezug kleiner Median,
+    Grundwasser groesser Median"
+  } else if (data_clean_summer$med_Quell[i] == TRUE & data_clean_summer$med_Grund[i] == TRUE) {
+    data_clean_summer$med[i] = "Quellbezug groesser Median,
+    Grundwasser groesser Median"
+  }
+  i = i+1
+}
+
+```
+
+PLOT: 
+
+```{r}
+ggplot(
+  data = data_clean_summer,
+  mapping= aes(x=interneBezuege, y = `Gruppenbezug [m^3]`)
+ )+ 
+  geom_point(mapping = aes(color = data_clean_summer$med)) +
+  geom_smooth(method = "lm") +
+  geom_hline(yintercept= median(data_clean_summer$`Gruppenbezug [m^3]`)) +
+  labs(
+    title = "Gruppenbezug als Funktion der internen Bezüge", 
+    x= "Interne Bezüge (m3/d)", 
+    y= "Gruppenbezug (m3/d)", 
+    color= "Zusammensetzung interne Bezüge:") +
+  theme(legend.position = c(0.85,0.86), legend.key.size = unit(0.1, "cm"), legend.text=element_text(size=5), legend.title = element_text(size=6))
+ggsave("Gruppenbezug_Funktion_interne_Bezuege.png")
+
+```
+
+```{r}
+install.packages("ggTimeSeries")
+library(ggTimeSeries)
+```
+
+```{r}
+data_clean_summer_selection = data_clean_summer |>
+  select(`Gesamtförderung [m^3/d]`, `Gruppenbezug [m^3]`, `Grundwasser tot. `,`Quellwasser [m^3]`) |>
+  mutate(n = seq(1, length(data_clean_summer_selection$`Gesamtförderung [m^3/d]`),1))
+
+
+fdData = data.frame(
+  time = c(1:350,1:350,1:350),
+  vec_values= c(data_clean_summer_selection$`Gruppenbezug [m^3]`, data_clean_summer_selection$`Grundwasser tot. `,data_clean_summer_selection$`Quellwasser [m^3]`))
+
+  fdData$vec_class= c(rep("Gruppenbezug", 350), rep("Grundwasser", 350), rep("Quellbezug", 350))
+  
+  fdData$vec_sum= c(rep((data_clean_summer_selection$`Quellwasser [m^3]`+ data_clean_summer_selection$`Grundwasser tot. `+ data_clean_summer_selection$`Gruppenbezug [m^3]`),3))
+               
+
+
+
+
+ggplot(
+  data = fdData,
+  mapping = aes(x=time, y=vec_values, fill=vec_class)) +
+    geom_col() +
+  geom_hline(yintercept = median((data_clean_summer_selection$`Quellwasser [m^3]`+ data_clean_summer_selection$`Grundwasser tot. `+ data_clean_summer_selection$`Gruppenbezug [m^3]`)))+
+  labs(title = "Täglicher Nettobezug nach Bezugsquellen", x= "Tag", y= "Nettobezug (m3/d)", fill= "") +
+  theme(legend.position = c(0.103,0.95), legend.key.size = unit(0.1, "cm"), legend.text=element_text(size=7), legend.title = element_blank())
+ggsave(filename="Nettobezug_nach_Bezugsquellen.png")
+
+```
+
+Testing third condition for instruments: 
+```{r}
+ view(data_clean_summer |>
+  mutate(
+    dif_P_ET = Nied_0_m3 - `ET [m3/d]`
+  ))
+```` 
